@@ -39,6 +39,10 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
+# cache and files
+src/raccoon_flanders_cache/
+src/raccoon_flanders_files/
+
 # translation temp files
 po/*~
 
