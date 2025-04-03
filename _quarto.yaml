@@ -18,9 +18,6 @@ website:
   navbar:
     logo: images/assets/logo_inbo.jpg
     search: true
-    left:
-      - href: src/raccoon-flanders.qmd
-      - text: "Emerging trend indicators"
     right:
       - icon: github
         href: https://github.com/inbo/raccoon-flanders
