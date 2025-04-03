@@ -1,0 +1,475 @@
+---
+title: "Emerging trend indicators of raccoon in Flanders"
+format:
+  html:
+    df-print: paged
+    toc: true
+    toc-float: true
+    toc-depth: 4
+    number-sections: true
+    code-fold: true
+    code-tools: true
+execute:
+  eval: true
+  echo: true
+  warning: true
+  error: false
+  include: true
+from: markdown+emoji
+---
+
+## Introduction
+
+This document shows how using GBIF species occurrence cubes to assess the emerging status of raccoon ([*Procyon lotor*](https://www.gbif.org/species/5218786)) in Flanders. This workflow is strongly based on the [**occurrence TrIAS indicators**](https://github.com/trias-project/indicators) and can be extended to other (invasive alien) species.
+
+### Setup
+
+First, list and load the needed packages.
+
+```{r pkgs, message=FALSE, warning=FALSE}
+library(readr)
+library(here)
+library(dplyr)
+library(patchwork)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(trias)
+```
+
+## Scope
+
+### Taxonomic scope
+
+The species of interest is the raccoon (*Procyon lotor (Linnaeus, 1758)*, GBIF Key: [5218786](https://www.gbif.org/species/5218786)). This workflow can easily be extended to other species.
+
+```{r define-species-of-interest}
+species <- tibble::tibble(
+  specieskey = c(5218786),
+  canonical_name = c("Procyon lotor")
+)
+```
+
+### Spatial scope
+
+We are interested over the emerging status of raccoon in **Flanders** and its provinces, where the province code (`province_code`) follows the [gadm.org](https://gadm.org/) format:
+
+```{r define-provinces}
+provinces <- tibble::tibble(
+  province = c("Antwerp",
+               "Limburg",
+               "East Flanders",
+               "Flemish Brabant",
+               "West Flanders"),
+  province_code = c("BEL.2.1_1",
+                    "BEL.2.2_1",
+                    "BEL.2.3_1",
+                    "BEL.2.4_1",
+                    "BEL.2.5_1")
+)
+```
+
+### Temporal scope
+
+We request a species occurrence cube based on data from **1950**.
+
+## Species occurrence cube
+
+We triggered a GBIF occurrence cube via the [Occurrence SQL Download API](https://techdocs.gbif.org/en/data-use/api-sql-downloads). The resulting cube (DOI: [10.15468/dl.k8vjjz](https://doi.org/10.15468/dl.k8vjjz), `downloadKey`: 0001753-250402121839773) can be downloaded in TSV format from GBIF. We have it saved at `data/input` as [`0001888-250402121839773.csv`](https://github.com/inbo/raccoon-flanders/blob/main/data/input/0001888-250402121839773.csv):
+
+```{r read-cube, message=FALSE}
+cube <- readr::read_tsv(
+  here::here(
+    "data",
+    "input",
+    "0001888-250402121839773.csv"
+  )
+)
+```
+
+Preview:
+
+```{r}
+head(cube)
+```
+
+We add `"Flanders"` to the list of province names and codes in order to calculate the emerging trends for both Flanders and its provinces at once:
+
+```{r add_europe_country}
+provinces <- provinces |>
+  dplyr::add_row(province = "Flanders", province_code = "BEL.2_1")
+```
+
+So, from now on, when we refer to "province", we also mean "Flanders".
+
+We calculate the cube for Flanders:
+
+```{r calc_cube_fl}
+cube_flanders <- cube |>
+  group_by(species, specieskey, year, eeacellcode) |>
+  summarise(
+    level2gid = "BEL.2_1",
+    occurrences = sum(occurrences),
+    mincoordinateuncertaintyinmeters = min(mincoordinateuncertaintyinmeters),
+    .groups = "drop") %>%
+  # order columns as in the original cube
+  dplyr::select(
+    dplyr::all_of(names(cube))
+  )
+head(cube_flanders)
+```
+
+And we add it to `cube`:
+
+```{r add_europe_to_cube}
+cube <- dplyr::bind_rows(cube, cube_flanders)
+```
+
+We also add the province names to the cube. We use the `level2gid` column to do this. The `level2gid` column contains the province codes, which we can use to join with the `provinces` table:
+
+```{r add_province_names}
+cube <- cube |>
+  dplyr::left_join(
+    provinces,
+    by = c("level2gid" = "province_code")
+  ) |>
+  dplyr::select(
+    species,
+    specieskey,
+    year,
+    eeacellcode,
+    level2gid,
+    province,
+    occurrences,
+    mincoordinateuncertaintyinmeters
+  )
+```
+
+## From cubes to emerging status
+
+We assess the emerging status of the species at province level and in all Flanders for 2024. We first have to create time series up to 2024.
+
+```{r}
+last_year <- 2024
+```
+
+### Preprocess: from cube to time series
+
+For each province, define cells with at least one observation:
+
+```{r}
+df_cc <-   cube |>
+  dplyr::group_by(specieskey, level2gid) |>
+  dplyr::distinct(eeacellcode) |>
+  dplyr::ungroup()
+```
+
+For each province, identify the first year with at least one observation:
+
+```{r}
+df_begin_year <-
+  cube |>
+  dplyr::group_by(specieskey, level2gid) |>
+  dplyr::summarize(begin_year = min(year), .groups = "drop")
+```
+
+For each province, combine `begin_year` and unique `eeacellcode` as found above:
+
+```{r}
+df_cc <-   df_cc |>
+  dplyr::left_join(df_begin_year, by = c("specieskey", "level2gid")) |> 
+  dplyr::select(specieskey, level2gid, begin_year, eeacellcode)
+```
+
+Preview:
+
+```{r}
+head(df_cc)
+```
+
+For each cell (`eeacellcode`), province (`level2gid`), we can now create a time series:
+
+```{r Create_timeseries_slots}
+# Define help function
+make_time_series <- function(eeacellcode, level2gid, specieskey, begin_year, last_year) {
+  tidyr::expand_grid(
+    eeacellcode = eeacellcode,
+    level2gid = level2gid,
+    specieskey = specieskey,
+    year = seq(from = begin_year, to = last_year)
+  )
+}
+
+# Create timeseries slots
+df_ts <- purrr::pmap_dfr(df_cc,
+  .f = make_time_series,
+  last_year = last_year
+)
+
+# Add occurrence data
+df_ts <-
+  df_ts |>
+  dplyr::left_join(
+    cube |> dplyr::select(
+      specieskey,
+      year,
+      eeacellcode,
+      level2gid,
+      province,
+      occurrences
+    ),
+    by = c("specieskey", "level2gid", "year", "eeacellcode")
+  )
+
+# Replace NAs with 0
+df_ts <-
+  df_ts |>
+  tidyr::replace_na(list(occurrences = 0))
+```
+
+Add column for presence (1) or absence (0):
+
+```{r presence_absence}
+df_ts <-
+  df_ts |>
+  dplyr::mutate(
+    ispresent = dplyr::if_else(occurrences > 0, 1, 0)
+  )
+```
+
+Save the time series at province level as an interim output, `time_series.tsv` in directory `data/interim`:
+
+```{r save-time-series}
+readr::write_tsv(
+  df_ts,
+  here::here("data", "interim", "time_series.tsv"),
+  na = ""
+)
+```
+
+### Apply GAM
+
+We are now ready to apply a Generalized Additive Model (GAM) to assess the emerging status of raccoon. Let's compact the time series:
+
+```{r}
+compact_df_ts <- df_ts |>
+    dplyr::group_by(specieskey, level2gid, province, year) |>
+    dplyr::summarise(
+      occs = sum(occurrences),
+      ncells = sum(ispresent),
+      .groups = "drop")
+```
+
+All plots will be saved in subdirectories of `./data/output/GAM_outputs`:
+
+```{r root-output-gam}
+dir_name_basic <- here::here("data", "output", "GAM_outputs")
+```
+
+We also define the plot dimensions in pixels:
+
+```{r dims-plot}
+plot_dimensions <- list(width = 2800, height = 1500)
+```
+
+We apply GAM for each province for the number of occurrences:
+
+```{r run-gam-occs}
+gam_occs <- purrr::map(
+  provinces$province,
+  function(pr) {
+    gam_occs_per_province <- purrr::map2(
+      species$specieskey, species$canonical_name,
+      function(t, n) {
+        df_key <- compact_df_ts |>
+          dplyr::filter(specieskey == t, province == pr)
+        eval_year <- df_key$year[nrow(df_key)]
+        trias::apply_gam(
+          df = df_key,
+          y_var = "occs",
+          taxonKey = "specieskey",
+          eval_years = eval_year,
+          type_indicator = "observations",
+          taxon_key = t,
+          name = n,
+          df_title = pr,
+          dir_name = paste0(dir_name_basic, "/long_titles"),
+          y_label = "number of observations",
+          saveplot = TRUE,
+          width = plot_dimensions$width,
+          height = plot_dimensions$height
+        )
+      })
+    names(gam_occs_per_province) <- species$canonical_name
+    gam_occs_per_province
+  }
+)
+names(gam_occs) <- provinces$province
+```
+
+And the number of occupied cells, or **measured occupancy**:
+
+```{r run-gam-ncells}
+gam_ncells <- purrr::map(
+  provinces$province,
+  function(pr) {
+    gam_ncells_per_province <- purrr::map2(
+      species$specieskey, species$canonical_name,
+      function(t, n) {
+        df_key <- compact_df_ts |>
+          dplyr::filter(specieskey == t, province == pr)
+        eval_year <- df_key$year[nrow(df_key)]
+        trias::apply_gam(
+          df = df_key,
+          y_var = "ncells",
+          taxonKey = "specieskey",
+          eval_years = eval_year,
+          type_indicator = "occupancy",
+          taxon_key = t,
+          name = n,
+          df_title = pr,
+          dir_name = paste0(dir_name_basic, "/long_titles"),
+          y_label = "number of occupied cells (1km x 1km)",
+          saveplot = TRUE,
+          width = plot_dimensions$width,
+          height = plot_dimensions$height
+        )
+      })
+    names(gam_ncells_per_province) <- species$canonical_name
+    gam_ncells_per_province
+  }
+)
+names(gam_ncells) <- provinces$province
+```
+
+## Plots
+
+Please go to [`./data/output/GAM_outputs`](https://github.com/inbo/raccoon-flanders/tree/main/data/output/GAM_outputs) to download the plots shown in this section.
+
+### Standard plots
+
+In this section we show the plots as returned by `apply_gam()`. Plot titles could be quite long. Folder: [`./data/output/GAM_outputs/long_titles`](https://github.com/inbo/raccoon-flanders/tree/main/data/output/GAM_outputs/long_titles).
+
+#### Occurrences
+
+```{r occs-plots}
+purrr::walk(gam_occs, function(province) {
+  purrr::walk(province, function(x) print(x$plot))
+  }
+)
+```
+
+#### Measured occupancy
+
+```{r n_cells-plots}
+purrr::walk(gam_ncells, function(pr) {
+  purrr::walk(pr, function(x) print(x$plot))
+  }
+)
+```
+
+### Short titles
+
+We show and save plots with the species only as title. We save them in sub folder [`./data/output/GAM_outputs/short_title`](https://github.com/inbo/raccoon-flanders/tree/main/data/output/GAM_outputs/short_title).
+
+#### Occurrences
+
+```{r remove_titles_occs}
+purrr::iwalk(gam_occs, function(x, pr) {
+  purrr::iwalk(x, function(y, sp) {
+    y$plot <- y$plot + ggplot2::ggtitle(label = paste(sp, "-", pr))
+    ggplot2::ggsave(
+      filename = here::here(
+        "data",
+        "output",
+        "GAM_outputs",
+        "short_title",
+        paste0("occurrences_", sp, "_", pr, ".png")),
+      plot = y$plot,
+      width = plot_dimensions$width,
+      height = plot_dimensions$height,
+      units = "px"
+    )
+    print(y$plot)
+  })
+})
+```
+
+#### Occupancy
+
+We do the same for the measured occupancy (number of occupied grid cells).
+
+```{r remove_titles_ncells}}
+purrr::iwalk(gam_ncells, function(x, pr) {
+  purrr::iwalk(x, function(y, sp) {
+    y$plot <- y$plot + ggplot2::ggtitle(label = paste(sp, "-", pr))
+    ggplot2::ggsave(
+      filename = here::here(
+        "data",
+        "output",
+        "GAM_outputs",
+        "short_title",
+        paste0("occupancy_", sp, "_", pr, ".png")),
+      plot = y$plot,
+      width = plot_dimensions$width,
+      height = plot_dimensions$height,
+      units = "px"
+    )
+    print(y$plot)
+  })
+})
+```
+
+### Grid
+
+For each province, we can show the plots of the number of occurrences and the measured occupancy next to each other. Plots are saved in subfolder [`./data/output/GAM_outputs/plots_for_countries`](https://github.com/inbo/raccoon-flanders/tree/main/data/output/GAM_outputs/plots_for_provinces).
+
+```{r grid_per_country}
+# Transform gam_occs and gam_ncells into a list of lists 
+gam_provinces <- purrr::map(
+  provinces$province,
+  function(pr) {
+    purrr::map2(
+      gam_occs[[pr]],
+      gam_ncells[[pr]],
+      function(x, y) list(occurrences = x, ncells = y)
+    )
+  }
+)
+names(gam_provinces) <- provinces$province
+# Create a grid of plots for each province
+purrr::walk2(
+  gam_provinces,
+  provinces$province,
+  function(gam, pr) {
+    purrr::walk(gam, function(x) {
+      # Remove title
+      x$occurrences$plot <- x$occurrences$plot + ggplot2::ggtitle(NULL)
+      x$ncells$plot <- x$ncells$plot + ggplot2::ggtitle(NULL)
+      p <- patchwork::wrap_plots(x$occurrences$plot,
+                                 x$ncells$plot,
+                                 nrow = 1,
+                                 ncol = 2) +
+        # Unify legends
+        patchwork::plot_layout(guides = 'collect') + 
+        # Add general title
+        patchwork::plot_annotation(
+          title = pr
+        )
+      ggplot2::ggsave(
+        filename = here::here(
+          "data",
+          "output",
+          "GAM_outputs",
+          "plots_for_provinces",
+          paste0(pr, "_grid.png")),
+        plot = p,
+        width = plot_dimensions$width,
+        height = plot_dimensions$height,
+        units = "px"
+      )
+      print(p)
+    })
+  }
+)
+```
