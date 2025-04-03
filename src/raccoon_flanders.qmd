@@ -1,23 +1,7 @@
 ---
-title: "Emerging trend indicators of raccoon in Flanders"
+title: "Emerging trend indicators"
 format:
-  html:
-    df-print: paged
-    toc: true
-    toc-float: true
-    toc-depth: 4
-    number-sections: true
-    code-fold: true
-    code-tools: true
-execute:
-  eval: true
-  echo: true
-  warning: true
-  error: false
-  include: true
-project:
-  execute-dir: project
-output-dir: docs
+  html
 ---
 
 ## Introduction

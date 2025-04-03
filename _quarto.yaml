@@ -1,0 +1,32 @@
+project:
+  type: website
+  output-dir: docs
+  execute-dir: project
+format:
+  html:
+    theme: flatly
+    df-print: paged
+    toc: true
+    toc-float: true
+    toc-depth: 4
+    number-sections: true
+    code-tools: true
+from: markdown+emoji
+website:
+  title: "The status of raccoon in Flanders"
+  navbar:
+    logo: images/assets/logo_inbo.jpg
+    search: true
+    left:
+      - href: src/raccoon-flanders.qmd
+      - text: "Emerging status indicators"
+    right:
+      - icon: github
+        href: https://github.com/inbo/raccoon-flanders
+        aria-label: "GitHub Repository"
+execute:
+  eval: true
+  echo: true
+  warning: true
+  error: false
+  include: true
