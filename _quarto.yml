@@ -12,7 +12,6 @@ format:
     number-sections: true
     code-tools: true
     code-fold: true
-from: markdown+emoji
 website:
   title: "The status of raccoon in Flanders"
   navbar:
