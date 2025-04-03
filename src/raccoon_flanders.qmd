@@ -15,7 +15,9 @@ execute:
   warning: true
   error: false
   include: true
-from: markdown+emoji
+project:
+  execute-dir: project
+output-dir: docs
 ---
 
 ## Introduction
@@ -147,7 +149,7 @@ cube <- cube |>
 
 ## From cubes to emerging status
 
-We assess the emerging status of the species at province level and in all Flanders for 2024. We first have to create time series up to 2024.
+We assess the emerging status of the species at province level and in all Flanders. We create time series up to 2024, because we do not have complete data for 2025 yet:
 
 ```{r}
 last_year <- 2024
